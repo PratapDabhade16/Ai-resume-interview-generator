@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Resume Interview Generator</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      max-width: 700px;
+      margin: auto;
+    }
+
+    input, button {
+      padding: 8px;
+      width: 100%;
+      margin-bottom: 12px;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    pre {
+      background: #f4f4f4;
+      padding: 15px;
+      white-space: pre-wrap;
+      border-radius: 6px;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h2>Resume Interview Generator</h2>
+
+  <form id="resumeForm">
+    <input type="file" name="resume" required />
+
+    <input type="text" name="role" placeholder="Job Role (e.g. Backend Developer)" required />
+
+    <input type="text" name="experience" placeholder="Experience (e.g. 2 years)" required />
+
+    <input type="text" name="difficulty" placeholder="Difficulty (Easy / Medium / Hard)" required />
+
+    <button type="submit">Generate Questions</button>
+  </form>
+
+  <h3>Interview Questions</h3>
+  <pre id="output">Submit the form to see questions here...</pre>
+
+  <script>
+    const form = document.getElementById("resumeForm");
+    const output = document.getElementById("output");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault(); // stop page reload
+
+      output.textContent = "Generating questions... ⏳";
+
+      const formData = new FormData(form);
+
+      try {
+        const response = await fetch("/generate", {
+          method: "POST",
+          body: formData
+        });
+
+        // Read as text first (safe)
+        const text = await response.text();
+
+        try {
+          const data = JSON.parse(text);
+          output.textContent = data.questions || "No questions returned.";
+        } catch {
+          // If server accidentally returns HTML
+          output.textContent = "Server returned unexpected response:\n\n" + text;
+        }
+
+      } catch (err) {
+        output.textContent = "Error: " + err.message;
+      }
+    });
+  </script>
+
+</body>
+</html>
