@@ -252,7 +252,9 @@ app.post("/evaluate-answer", async (req, res) => {
     const round = ROUND_CONFIG[roundNumber];
 
     const prompt = `
-You are a strict but fair interviewer evaluating a ${resumeData.role} candidate in ${resumeData.field}.
+You are a STRICT technical interviewer evaluating a ${resumeData.role} candidate in ${resumeData.field}.
+
+CRITICAL: You MUST be harsh with poor answers. Do NOT give sympathy points.
 
 Question: "${question}"
 Candidate Answer: "${answer}"
@@ -264,19 +266,29 @@ Candidate Profile:
 - Skills: ${resumeData.skills?.join(", ")}
 - Round: ${roundNumber} of 3 (${round.name} — ${round.difficulty} difficulty)
 
-Scoring guide for a ${resumeData.experience} ${resumeData.role}:
-- 0 to 3: Off-topic or shows no relevant knowledge for this field
-- 4 to 5: Weak — vague answer, missing key ${resumeData.field} knowledge
-- 6 to 7: Decent — shows understanding but lacks depth or specific examples
-- 8 to 9: Strong — specific, well-structured, shows real ${resumeData.field} expertise  
-- 10: Exceptional — would impress any senior interviewer in ${resumeData.field}
+STRICT SCORING RULES — NO EXCEPTIONS:
+- 0: Completely random characters, numbers, or gibberish (like "123", "asdf", "----", "===")
+- 1: Answer is off-topic or shows zero understanding of the question
+- 2-3: Answer attempts to respond but contains fundamental errors or misconceptions
+- 4-5: Weak answer with vague, generic statements lacking ${resumeData.field} specifics
+- 6-7: Decent answer showing basic understanding but missing depth or real examples
+- 8-9: Strong answer with specific details, demonstrates real ${resumeData.field} expertise
+- 10: Exceptional answer that would impress senior ${resumeData.field} professionals
+
+MANDATORY CHECKS BEFORE SCORING:
+1. Is the answer actual text or just random characters/numbers? If random → score = 0
+2. Does the answer address the question at all? If no → score ≤ 2
+3. Does the answer show domain knowledge in ${resumeData.field}? If no → score ≤ 4
+4. Does the answer include specific examples or depth? If no → score ≤ 6
+
+BE STRICT. Most answers should score 3-6. Only genuinely excellent answers deserve 8+.
 
 Return ONLY a valid JSON object. No extra text. No markdown.
 
 {
   "score": <number 0 to 10>,
   "verdict": "STRONG or ADEQUATE or WEAK",
-  "strengths": ["specific strength from the answer"],
+  "strengths": ["specific strength from the answer, or 'None - answer inadequate' if score < 4"],
   "weaknesses": ["specific gap relevant to ${resumeData.role}"],
   "improvement": "one actionable tip specific to this role and field",
   "highlight": "one sentence summary of the answer quality"
@@ -291,6 +303,20 @@ Return ONLY a valid JSON object. No extra text. No markdown.
     }
 
     const evaluation = JSON.parse(jsonMatch[0]);
+
+    // ✅ FIX: Ensure strengths and weaknesses are always arrays
+    if (typeof evaluation.strengths === 'string') {
+      evaluation.strengths = [evaluation.strengths];
+    }
+    if (typeof evaluation.weaknesses === 'string') {
+      evaluation.weaknesses = [evaluation.weaknesses];
+    }
+    if (!Array.isArray(evaluation.strengths)) {
+      evaluation.strengths = [];
+    }
+    if (!Array.isArray(evaluation.weaknesses)) {
+      evaluation.weaknesses = [];
+    }
 
     // Add pass/fail info based on round threshold
     const passed = evaluation.score >= round.passThreshold;
