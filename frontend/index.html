@@ -837,522 +837,150 @@
     <div class="toast-title" id="toast-title"></div>
     <div class="toast-msg"   id="toast-msg"></div>
   </div>
+<script>
+const API_BASE = "https://ai-resume-backend-t7lo.onrender.com";
 
-  <!-- ==================== SCRIPT ==================== -->
-  <script>
-    /* ───────────── STATE ───────────── */
-    const state = {
-      resumeFile:    null,
-      resumeData:    null,
-      roundNumber:   1,
-      questions:     [],
-      qIndex:        0,
-      scores:        [],
-      answers:       [],
-      allRoundsData: [],
-      currentEval:   null,
-    };
+const state = {
+  resumeFile: null,
+  resumeData: null,
+  roundNumber: 1,
+  questions: [],
+  qIndex: 0,
+  scores: [],
+  answers: [],
+  allRoundsData: [],
+  currentEval: null,
+};
 
-    const ROUND_COLORS = { 1: "r1", 2: "r2", 3: "r3" };
-    const ROUND_EMOJIS = { 1: "🟢", 2: "🟡", 3: "🔴" };
+async function startInterview() {
+  const formData = new FormData();
+  formData.append("resume", state.resumeFile);
 
-    /* ───────────── UTILS ───────────── */
-    function showPage(id) {
-      document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
-      document.getElementById(id).classList.add("active");
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
-
-    function updateSteps(active) {
-      [1,2,3,4].forEach(i => {
-        const el = document.getElementById("step" + i);
-        el.classList.remove("done", "active");
-        if (i < active)  el.classList.add("done");
-        if (i === active) el.classList.add("active");
-      });
-    }
-
-    function scoreColor(s) {
-      return s >= 8 ? "var(--green)" : s >= 6 ? "var(--yellow)" : "var(--red)";
-    }
-    function scoreClass(s) {
-      return s >= 8 ? "green" : s >= 6 ? "yellow" : "red";
-    }
-
-    function toast(title, msg, color = "var(--accent)") {
-      const t = document.getElementById("toast");
-      document.getElementById("toast-title").textContent = title;
-      document.getElementById("toast-title").style.color = color;
-      document.getElementById("toast-msg").textContent = msg;
-      t.classList.add("show");
-      setTimeout(() => t.classList.remove("show"), 4000);
-    }
-
-    function setBtn(id, html, disabled = false) {
-      const b = document.getElementById(id);
-      b.innerHTML = html;
-      b.disabled = disabled;
-    }
-
-    /* ───────────── UPLOAD PAGE ───────────── */
-    const dropZone  = document.getElementById("drop-zone");
-    const fileInput = document.getElementById("file-input");
-
-    dropZone.addEventListener("click", () => fileInput.click());
-    dropZone.addEventListener("dragover",  e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
-    dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
-    dropZone.addEventListener("drop", e => {
-      e.preventDefault();
-      dropZone.classList.remove("drag-over");
-      handleFile(e.dataTransfer.files[0]);
-    });
-    fileInput.addEventListener("change", () => handleFile(fileInput.files[0]));
-
-    function handleFile(file) {
-      if (!file) return;
-      if (!file.name.endsWith(".pdf")) {
-        toast("Wrong format", "Please upload a PDF file.", "var(--red)"); return;
-      }
-      state.resumeFile = file;
-      document.getElementById("drop-title").textContent = file.name;
-      document.getElementById("drop-ok").textContent = "✓ Ready — click Start Interview";
-      document.getElementById("drop-ok").style.display = "block";
-      document.getElementById("btn-start").disabled = false;
-    }
-
-    document.getElementById("btn-start").addEventListener("click", startInterview);
-
-    async function startInterview() {
-      setBtn("btn-start", '<span class="spinner"></span> Analyzing…', true);
-      updateSteps(1);
-      showPage("page-analysis");
-
-      const formData = new FormData();
-      formData.append("resume", state.resumeFile);
-
-      try {
-        document.getElementById("loading-status").textContent = "Detecting your field and role…";
-        const res  = await fetch("/analyze-resume", { method: "POST", body: formData });
-        const data = await res.json();
-
-        if (!data.success) throw new Error(data.error || "Analysis failed");
-
-        state.resumeData = data.analysis;
-        renderAnalysis(data.analysis);
-        toast("Resume Analyzed!", `${data.analysis.role} in ${data.analysis.field} detected.`, "var(--green)");
-      } catch (err) {
-        toast("Error", err.message, "var(--red)");
-        showPage("page-upload");
-        setBtn("btn-start", "▶ Start Interview", false);
-      }
-    }
-
-    /* ───────────── ANALYSIS PAGE ───────────── */
-    function renderAnalysis(a) {
-      document.getElementById("analysis-title").textContent = `${a.name} · ${a.role}`;
-      document.getElementById("pill-text").textContent =
-        `${a.field}  ·  ${a.experience}  ·  ${a.interviewStyle === "technical" ? "Technical" : a.interviewStyle === "behavioral" ? "Behavioral" : "Mixed"} Interview`;
-
-      // Meta
-      document.getElementById("meta-row").innerHTML = `
-        <div class="meta-item"><div class="meta-key">ROLE</div><div class="meta-val accent">${a.role}</div></div>
-        <div class="meta-item"><div class="meta-key">FIELD</div><div class="meta-val">${a.field}</div></div>
-        <div class="meta-item"><div class="meta-key">EXPERIENCE</div><div class="meta-val">${a.experience}</div></div>
-      `;
-      document.getElementById("summary-text").textContent = a.summary;
-
-      // Skills
-      document.getElementById("skills-wrap").innerHTML =
-        (a.skills || []).map(s =>
-          `<span class="skill-tag ${a.topSkills?.includes(s) ? "top" : ""}">${s}</span>`
-        ).join("");
-
-      // Highlights
-      document.getElementById("highlights-wrap").innerHTML =
-        (a.highlights || []).map(h => `<div class="highlight-item">• ${h}</div>`).join("");
-
-      // Round previews
-      const themes = [a.round1Theme, a.round2Theme, a.round3Theme];
-      const names  = ["Foundation", "Application", "Strategy"];
-      const thresh = [6, 7, 8];
-      document.getElementById("rounds-grid").innerHTML = [1,2,3].map(i => `
-        <div class="round-preview r${i}">
-          <span class="rp-emoji">${ROUND_EMOJIS[i]}</span>
-          <div class="rp-name">Round ${i}: ${names[i-1]}</div>
-          <div class="rp-theme">${themes[i-1] || ""}</div>
-          <div class="rp-thresh">Pass: avg ≥ ${thresh[i-1]}/10 · 5 questions</div>
-        </div>
-      `).join("");
-
-      // Update "Begin Round 1" label
-      document.getElementById("btn-begin-r1").textContent =
-        `▶ Begin Round 1: ${(a.round1Theme || "").split(" ").slice(0,4).join(" ")}`;
-
-      // Show content
-      document.getElementById("analysis-loading").style.display = "none";
-      document.getElementById("analysis-content").style.display = "block";
-      updateSteps(2);
-    }
-
-    document.getElementById("btn-begin-r1").addEventListener("click", () => {
-      state.roundNumber = 1;
-      loadRound(1);
+  try {
+    const res = await fetch(`${API_BASE}/analyze-resume`, {
+      method: "POST",
+      body: formData,
     });
 
-    /* ───────────── INTERVIEW PAGE ───────────── */
-    async function loadRound(roundNum) {
-      state.roundNumber = roundNum;
-      state.questions   = [];
-      state.qIndex      = 0;
-      state.scores      = [];
-      state.answers     = [];
+    if (!res.ok) throw new Error("Server error");
 
-      showPage("page-interview");
-      updateSteps(3);
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
 
-      const colorClass = ROUND_COLORS[roundNum];
-      document.getElementById("round-dot").className = `round-dot ${colorClass}`;
-      document.getElementById("q-text").textContent  = "Generating questions…";
-      document.getElementById("answer-box").value    = "";
-      document.getElementById("btn-submit-answer").disabled = true;
+    state.resumeData = data.analysis;
+    renderAnalysis(data.analysis);
 
-      const themes = [
-        state.resumeData.round1Theme,
-        state.resumeData.round2Theme,
-        state.resumeData.round3Theme,
-      ];
+  } catch (err) {
+    alert("Error: " + err.message);
+  }
+}
 
-      try {
-        const res  = await fetch("/generate-questions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ resumeData: state.resumeData, roundNumber: roundNum }),
-        });
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error);
-
-        state.questions = data.questions;
-
-        document.getElementById("round-title").textContent =
-          `Round ${roundNum}: ${data.roundInfo.name}`;
-        document.getElementById("round-sub").textContent = themes[roundNum - 1] || "";
-
-        renderQuestion();
-        document.getElementById("btn-submit-answer").disabled = false;
-        toast(`Round ${roundNum} Ready`, `${data.questions.length} questions loaded.`, "var(--accent)");
-      } catch (err) {
-        toast("Error", err.message, "var(--red)");
-      }
-    }
-
-    function renderQuestion() {
-      const q = state.questions[state.qIndex];
-      const total = state.questions.length;
-      const roundNum = state.roundNumber;
-      const colorClass = ROUND_COLORS[roundNum];
-      const thresh = [6, 7, 8][roundNum - 1];
-
-      document.getElementById("q-tag").textContent =
-        `${state.resumeData.role.toUpperCase()} · ROUND ${roundNum} · QUESTION ${state.qIndex + 1}`;
-      document.getElementById("q-text").textContent = q;
-      document.getElementById("q-info").innerHTML =
-        `Q${state.qIndex + 1} of ${total}<br><span style="font-size:11px;color:var(--text3)">Pass threshold: ${thresh}/10</span>`;
-
-      // Hint based on interview style
-      const hints = {
-        technical:  "💡 Be specific — mention tools, methods, metrics, or techniques you used.",
-        behavioral: "💡 Use STAR format: Situation → Task → Action → Result.",
-        mixed:      "💡 Combine domain knowledge with real examples from your experience.",
-      };
-      document.getElementById("q-hint").textContent =
-        hints[state.resumeData.interviewStyle] || hints.mixed;
-
-      // Progress bar
-      const pct = (state.qIndex / total) * 100;
-      const pf  = document.getElementById("progress-fill");
-      pf.className = `progress-bar-fill ${colorClass}`;
-      pf.style.width = pct + "%";
-
-      // Reset textarea
-      document.getElementById("answer-box").value = "";
-      document.getElementById("word-count").textContent = "0 words";
-    }
-
-    // Word count
-    document.getElementById("answer-box").addEventListener("input", function() {
-      const words = this.value.trim().split(/\s+/).filter(Boolean).length;
-      document.getElementById("word-count").textContent = words + " words";
+async function loadRound(roundNum) {
+  try {
+    const res = await fetch(`${API_BASE}/generate-questions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        resumeData: state.resumeData,
+        roundNumber: roundNum,
+      }),
     });
 
-    // Submit answer
-    document.getElementById("btn-submit-answer").addEventListener("click", submitAnswer);
+    if (!res.ok) throw new Error("Server error");
 
-    async function submitAnswer() {
-      const answer = document.getElementById("answer-box").value.trim();
-      if (!answer) { toast("Empty answer", "Please type an answer first.", "var(--yellow)"); return; }
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
 
-      setBtn("btn-submit-answer", '<span class="spinner"></span> Evaluating…', true);
+    state.questions = data.questions;
+    state.qIndex = 0;
+    renderQuestion();
 
-      try {
-        const res  = await fetch("/evaluate-answer", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            question:    state.questions[state.qIndex],
-            answer,
-            resumeData:  state.resumeData,
-            roundNumber: state.roundNumber,
-          }),
-        });
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error);
+  } catch (err) {
+    alert("Error: " + err.message);
+  }
+}
 
-        state.currentEval = data.evaluation;
-        state.scores.push(data.evaluation.score);
-        state.answers.push(answer);
+async function submitAnswer() {
+  const answer = document.getElementById("answer-box").value.trim();
+  if (!answer) return;
 
-        renderEvalOverlay(data.evaluation);
-      } catch (err) {
-        toast("Error", err.message, "var(--red)");
-        setBtn("btn-submit-answer", "Submit Answer →", false);
-      }
-    }
-
-    function renderEvalOverlay(ev) {
-      const roundNum = state.roundNumber;
-      const thresh   = [6, 7, 8][roundNum - 1];
-      const pass     = ev.score >= thresh;
-      const color    = scoreColor(ev.score);
-
-      document.getElementById("eval-header-label").textContent =
-        `${state.resumeData.role.toUpperCase()} · ROUND ${roundNum} EVALUATION`;
-
-      document.getElementById("eval-score").textContent = ev.score;
-      document.getElementById("eval-score").style.color = color;
-      document.getElementById("eval-highlight").textContent = ev.highlight || "";
-
-      document.getElementById("eval-track").style.width = (ev.score * 10) + "%";
-      document.getElementById("eval-track").style.background = color;
-
-      const vTag = document.getElementById("eval-verdict");
-      vTag.textContent = ev.verdict;
-      vTag.className   = `verdict-tag ${pass ? "pass" : "fail"}`;
-
-      document.getElementById("eval-strengths").innerHTML =
-        (ev.strengths || []).map(s => `<span class="eval-chip good">✓ ${s}</span>`).join("");
-      document.getElementById("eval-weaknesses").innerHTML =
-        (ev.weaknesses || []).map(w => `<span class="eval-chip bad">→ ${w}</span>`).join("");
-      document.getElementById("eval-tip").textContent = ev.improvement || "";
-
-      // Next button label
-      const isLast = state.qIndex + 1 >= state.questions.length;
-      document.getElementById("btn-next-q").textContent =
-        isLast ? "See Round Result →" : "Next Question →";
-
-      document.getElementById("eval-overlay").classList.add("show");
-      setBtn("btn-submit-answer", "Submit Answer →", false);
-    }
-
-    // Next question button
-    document.getElementById("btn-next-q").addEventListener("click", async () => {
-      document.getElementById("eval-overlay").classList.remove("show");
-
-      const isLast = state.qIndex + 1 >= state.questions.length;
-
-      if (!isLast) {
-        state.qIndex++;
-        renderQuestion();
-      } else {
-        // Submit round
-        await submitRound();
-      }
+  try {
+    const res = await fetch(`${API_BASE}/evaluate-answer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question: state.questions[state.qIndex],
+        answer,
+        resumeData: state.resumeData,
+        roundNumber: state.roundNumber,
+      }),
     });
 
-    async function submitRound() {
-      setBtn("btn-submit-answer", '<span class="spinner"></span> Calculating…', true);
+    if (!res.ok) throw new Error("Server error");
 
-      try {
-        const res  = await fetch("/submit-round", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            resumeData:  state.resumeData,
-            roundNumber: state.roundNumber,
-            questions:   state.questions,
-            answers:     state.answers,
-            scores:      state.scores,
-          }),
-        });
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error);
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
 
-        state.allRoundsData.push(data);
-        renderRoundResult(data);
-      } catch (err) {
-        toast("Error", err.message, "var(--red)");
-        setBtn("btn-submit-answer", "Submit Answer →", false);
-      }
-    }
+    state.currentEval = data.evaluation;
+    state.scores.push(data.evaluation.score);
+    state.answers.push(answer);
 
-    /* ───────────── ROUND RESULT PAGE ───────────── */
-    function renderRoundResult(data) {
-      showPage("page-round-result");
-      updateSteps(3);
+    renderEvalOverlay(data.evaluation);
 
-      const passed = data.roundPassed;
-      const avg    = data.averageScore;
+  } catch (err) {
+    alert("Error: " + err.message);
+  }
+}
 
-      document.getElementById("rr-icon").textContent  = passed ? "🎯" : "😓";
-      document.getElementById("rr-title").textContent = passed ? "Round Cleared!" : "Round Failed";
-      document.getElementById("rr-title").style.color = passed ? "var(--green)" : "var(--red)";
-      document.getElementById("rr-sub").innerHTML =
-        `Round ${data.roundNumber}: ${data.roundName} &nbsp;·&nbsp; 
-         Average: <strong style="color:${scoreColor(avg)}">${avg}/10</strong> 
-         &nbsp;(required ${data.passThreshold}/10)`;
+async function submitRound() {
+  try {
+    const res = await fetch(`${API_BASE}/submit-round`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        resumeData: state.resumeData,
+        roundNumber: state.roundNumber,
+        questions: state.questions,
+        answers: state.answers,
+        scores: state.scores,
+      }),
+    });
 
-      // Score pills
-      document.getElementById("rr-pills").innerHTML =
-        data.scoreBreakdown.map(s =>
-          `<div class="score-pill" style="color:${scoreColor(s.score)}">Q${s.question}: ${s.score}/10</div>`
-        ).join("");
+    if (!res.ok) throw new Error("Server error");
 
-      document.getElementById("rr-feedback").textContent = data.feedback || "";
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
 
-      const btnNext  = document.getElementById("btn-next-round");
-      const btnRetry = document.getElementById("btn-retry");
+    state.allRoundsData.push(data);
+    renderRoundResult(data);
 
-      if (passed && data.canProceed) {
-        btnNext.textContent = `▶ Proceed to Round ${data.nextRound}`;
-        btnNext.style.display = "inline-flex";
-        btnRetry.style.display = "none";
-        btnNext.onclick = () => loadRound(data.nextRound);
-      } else if (passed && data.isLastRound) {
-        // All rounds done
-        btnNext.textContent = "▶ See Final Report";
-        btnNext.style.display = "inline-flex";
-        btnRetry.style.display = "none";
-        btnNext.onclick = () => loadFinalReport();
-      } else {
-        // Failed
-        btnNext.style.display = "none";
-        btnRetry.style.display = "inline-flex";
-      }
-    }
+  } catch (err) {
+    alert("Error: " + err.message);
+  }
+}
 
-    /* ───────────── FINAL REPORT ───────────── */
-    async function loadFinalReport() {
-      try {
-        const res  = await fetch("/final-report", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            resumeData:    state.resumeData,
-            allRoundsData: state.allRoundsData,
-          }),
-        });
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error);
-        renderFinalReport(data.report);
-      } catch (err) {
-        toast("Error", err.message, "var(--red)");
-      }
-    }
+async function loadFinalReport() {
+  try {
+    const res = await fetch(`${API_BASE}/final-report`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        resumeData: state.resumeData,
+        allRoundsData: state.allRoundsData,
+      }),
+    });
 
-    /* ───────────── FINAL RESULT PAGE ───────────── */
-    function renderFinalReport(report) {
-      showPage("page-result");
-      updateSteps(4);
+    if (!res.ok) throw new Error("Server error");
 
-      const verdictMap = {
-        HIRE:    { icon: "🏆", text: "Hire Recommended",   css: "hire"    },
-        CONSIDER:{ icon: "⚡", text: "Worth Considering",   css: "consider"},
-        REJECT:  { icon: "📋", text: "Needs More Practice", css: "reject"  },
-      };
-      const v = verdictMap[report.overallVerdict] || verdictMap.CONSIDER;
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
 
-      document.getElementById("fr-icon").textContent    = v.icon;
-      document.getElementById("fr-verdict").textContent = v.text;
-      document.getElementById("fr-verdict").className   = `verdict-hero ${v.css}`;
-      document.getElementById("fr-sub").textContent =
-        `${report.candidateName} · ${report.roleAssessed} · ${report.fieldAssessed}`;
+    renderFinalReport(data.report);
 
-      // Stats
-      const avgColor = scoreClass(report.overallScore);
-      document.getElementById("fr-stats").innerHTML = `
-        <div class="stat-card">
-          <div class="stat-label">OVERALL SCORE</div>
-          <div class="stat-val ${avgColor}">${report.overallScore}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">ROUNDS CLEARED</div>
-          <div class="stat-val ${report.roundsPassed === report.totalRounds ? "green" : report.roundsPassed >= 1 ? "yellow" : "red"}">${report.roundsPassed}/${report.totalRounds}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">VERDICT</div>
-          <div class="stat-val accent">${report.overallVerdict}</div>
-        </div>
-      `;
-
-      // Round summary
-      const themes = [
-        state.resumeData.round1Theme,
-        state.resumeData.round2Theme,
-        state.resumeData.round3Theme,
-      ];
-      const names = ["Foundation", "Application", "Strategy"];
-      document.getElementById("fr-rounds").innerHTML =
-        [1,2,3].map(i => {
-          const rd = state.allRoundsData[i-1];
-          if (rd) {
-            return `
-              <div class="rs-item">
-                <span style="font-size:18px">${ROUND_EMOJIS[i]}</span>
-                <div class="rs-name">Round ${i}: ${names[i-1]}
-                  <div class="rs-theme">${themes[i-1] || ""}</div>
-                </div>
-                <div class="rs-score" style="color:${scoreColor(rd.averageScore)}">${rd.averageScore}</div>
-                <div class="rs-badge ${rd.roundPassed ? "pass" : "fail"}">${rd.roundPassed ? "PASSED" : "FAILED"}</div>
-              </div>`;
-          } else {
-            return `
-              <div class="rs-item">
-                <span style="font-size:18px">${ROUND_EMOJIS[i]}</span>
-                <div class="rs-name">Round ${i}: ${names[i-1]}
-                  <div class="rs-theme">${themes[i-1] || ""}</div>
-                </div>
-                <div class="rs-badge skip">NOT REACHED</div>
-              </div>`;
-          }
-        }).join("");
-
-      // Recommendation
-      document.getElementById("fr-recommendation").textContent = report.recommendation || "";
-      document.getElementById("fr-next-steps").textContent     = report.nextSteps || "";
-
-      toast("Interview Complete!", `Final verdict: ${report.overallVerdict}`, "var(--accent)");
-    }
-
-    /* ───────────── RETRY / RESTART ───────────── */
-    document.getElementById("btn-retry").addEventListener("click", resetAll);
-    document.getElementById("btn-restart").addEventListener("click", resetAll);
-
-    function resetAll() {
-      Object.assign(state, {
-        resumeFile: null, resumeData: null,
-        roundNumber: 1, questions: [], qIndex: 0,
-        scores: [], answers: [], allRoundsData: [], currentEval: null,
-      });
-
-      document.getElementById("drop-title").textContent = "Drop your resume here";
-      document.getElementById("drop-ok").style.display  = "none";
-      document.getElementById("file-input").value = "";
-      document.getElementById("analysis-loading").style.display = "block";
-      document.getElementById("analysis-content").style.display = "none";
-      setBtn("btn-start", "▶ Start Interview", true);
-      updateSteps(1);
-      showPage("page-upload");
-    }
-  </script>
-  
+  } catch (err) {
+    alert("Error: " + err.message);
+  }
+}
+</script>
 </body>
 </html>
