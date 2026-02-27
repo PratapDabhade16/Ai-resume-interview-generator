@@ -5,28 +5,57 @@ import multer from "multer";
 import fs from "fs";
 import fetch from "node-fetch";
 import { createRequire } from "module";
+import path from "path";
+import { fileURLToPath } from "url";
 
 dotenv.config();
 
 /* -------------------- pdf-parse FIX -------------------- */
+// Using the internal path avoids the test-file crash on Render
 const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse");
+const pdfParse = require("pdf-parse/lib/pdf-parse.js");
+
+/* -------------------- Path helpers (ESM) -------------------- */
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
 /* -------------------- App setup -------------------- */
 const app = express();
-app.use(cors());
+
+// ✅ CORS — allow your Vercel frontend + localhost
+const allowedOrigins = [
+  process.env.FRONTEND_URL,          // set this in Render dashboard
+  "http://localhost:3000",
+  "http://localhost:5000",
+  "http://127.0.0.1:5500",           // Live Server (VS Code)
+].filter(Boolean);
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // allow requests with no origin (curl, Postman, same-origin)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // fallback: allow all if no FRONTEND_URL is set (useful during initial deploy)
+    if (!process.env.FRONTEND_URL) return callback(null, true);
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+}));
+
 app.use(express.json());
-app.use(express.static("public"));
+
+// ✅ Serve static files from /public (the frontend index.html)
+app.use(express.static(path.join(__dirname, "public")));
 
 /* -------------------- Uploads folder -------------------- */
-const UPLOAD_DIR = "uploads";
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
+// On Render the filesystem is writable but ephemeral — fine for temp PDF parsing
+const UPLOAD_DIR = path.join(__dirname, "uploads");
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 /* -------------------- Multer -------------------- */
 const upload = multer({ dest: UPLOAD_DIR });
 
 /* -------------------- Round Config -------------------- */
-// These thresholds and descriptions apply to ALL job types
 const ROUND_CONFIG = {
   1: {
     name: "Foundation",
@@ -67,10 +96,15 @@ async function callGroq(prompt, maxTokens = 700) {
     }
   );
 
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Groq API error ${response.status}: ${errText}`);
+  }
+
   const data = await response.json();
 
   if (!data.choices || !data.choices[0]) {
-    throw new Error("Groq API returned no response");
+    throw new Error("Groq API returned no choices");
   }
 
   return data.choices[0].message.content;
@@ -79,19 +113,15 @@ async function callGroq(prompt, maxTokens = 700) {
 /* ================================================
    ROUTE 1 — Analyze Resume
    POST /analyze-resume
-   Body: multipart/form-data  →  resume (file)
-   Returns: name, role, field, experience, skills,
-            interviewStyle, round themes
    ================================================ */
 app.post("/analyze-resume", upload.single("resume"), async (req, res) => {
   try {
     if (!req.file)
       return res.status(400).json({ error: "No resume uploaded" });
 
-    // Parse PDF
     const pdfBuffer = fs.readFileSync(req.file.path);
-    const pdfData = await pdfParse(pdfBuffer);
-    fs.unlinkSync(req.file.path); // clean up
+    const pdfData   = await pdfParse(pdfBuffer);
+    fs.unlinkSync(req.file.path); // clean up temp file
 
     const resumeText = pdfData.text.substring(0, 3000);
 
@@ -123,7 +153,6 @@ ${resumeText}
 
     const raw = await callGroq(prompt, 800);
 
-    // Clean and parse JSON
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       return res.status(500).json({ error: "Could not parse resume analysis" });
@@ -131,21 +160,16 @@ ${resumeText}
 
     const analysis = JSON.parse(jsonMatch[0]);
 
-    res.json({
-      success: true,
-      analysis,
-    });
+    res.json({ success: true, analysis });
   } catch (err) {
     console.error("❌ /analyze-resume error:", err.message);
-    res.status(500).json({ error: "Failed to analyze resume" });
+    res.status(500).json({ error: "Failed to analyze resume: " + err.message });
   }
 });
 
 /* ================================================
    ROUTE 2 — Generate Questions for a Round
    POST /generate-questions
-   Body: JSON  →  resumeData, roundNumber (1/2/3)
-   Returns: questions array, roundInfo
    ================================================ */
 app.post("/generate-questions", async (req, res) => {
   try {
@@ -160,21 +184,16 @@ app.post("/generate-questions", async (req, res) => {
       return res.status(400).json({ error: "Invalid roundNumber. Use 1, 2, or 3" });
     }
 
-    // Pick correct theme based on round
     const themeMap = {
       1: resumeData.round1Theme || "core fundamentals",
       2: resumeData.round2Theme || "real-world application",
       3: resumeData.round3Theme || "advanced strategy and leadership",
     };
 
-    // Style guide based on interview type
     const styleGuide = {
-      technical:
-        "Ask knowledge-based questions testing deep understanding of tools, concepts, and methods used in their field.",
-      behavioral:
-        "Ask behavioral questions using STAR format about real situations, decisions, and outcomes from their experience.",
-      mixed:
-        "Mix domain knowledge questions with situational/behavioral questions based on their actual background.",
+      technical:  "Ask knowledge-based questions testing deep understanding of tools, concepts, and methods used in their field.",
+      behavioral: "Ask behavioral questions using STAR format about real situations, decisions, and outcomes from their experience.",
+      mixed:      "Mix domain knowledge questions with situational/behavioral questions based on their actual background.",
     };
 
     const prompt = `
@@ -211,7 +230,6 @@ FORMAT:
 
     const raw = await callGroq(prompt, 700);
 
-    // Parse numbered list into array
     const questions = raw
       .split("\n")
       .map((line) => line.replace(/^\d+[\.\)]\s*/, "").trim())
@@ -230,16 +248,13 @@ FORMAT:
     });
   } catch (err) {
     console.error("❌ /generate-questions error:", err.message);
-    res.status(500).json({ error: "Failed to generate questions" });
+    res.status(500).json({ error: "Failed to generate questions: " + err.message });
   }
 });
 
 /* ================================================
    ROUTE 3 — Evaluate a Single Answer
    POST /evaluate-answer
-   Body: JSON  →  question, answer, resumeData, roundNumber
-   Returns: score, verdict, strengths, weaknesses,
-            improvement, passed
    ================================================ */
 app.post("/evaluate-answer", async (req, res) => {
   try {
@@ -250,32 +265,21 @@ app.post("/evaluate-answer", async (req, res) => {
     }
 
     const round = ROUND_CONFIG[roundNumber];
+    if (!round) {
+      return res.status(400).json({ error: "Invalid roundNumber" });
+    }
 
     const prompt = `
-You are a STRICT technical interviewer evaluating a ${resumeData.role} candidate in ${resumeData.field}.
+You are a strict interviewer evaluating a ${resumeData.experience} ${resumeData.role} candidate.
 
-CRITICAL: You MUST be harsh with poor answers. Do NOT give sympathy points.
+QUESTION: ${question}
+CANDIDATE'S ANSWER: ${answer}
+ROUND: ${round.name} (${round.difficulty} difficulty)
+PASS THRESHOLD: ${round.passThreshold}/10
 
-Question: "${question}"
-Candidate Answer: "${answer}"
+Score this answer on a scale of 0–10. Be strict and fair.
 
-Candidate Profile:
-- Role: ${resumeData.role}
-- Field: ${resumeData.field}
-- Experience: ${resumeData.experience}
-- Skills: ${resumeData.skills?.join(", ")}
-- Round: ${roundNumber} of 3 (${round.name} — ${round.difficulty} difficulty)
-
-STRICT SCORING RULES — NO EXCEPTIONS:
-- 0: Completely random characters, numbers, or gibberish (like "123", "asdf", "----", "===")
-- 1: Answer is off-topic or shows zero understanding of the question
-- 2-3: Answer attempts to respond but contains fundamental errors or misconceptions
-- 4-5: Weak answer with vague, generic statements lacking ${resumeData.field} specifics
-- 6-7: Decent answer showing basic understanding but missing depth or real examples
-- 8-9: Strong answer with specific details, demonstrates real ${resumeData.field} expertise
-- 10: Exceptional answer that would impress senior ${resumeData.field} professionals
-
-MANDATORY CHECKS BEFORE SCORING:
+SCORING GUIDE:
 1. Is the answer actual text or just random characters/numbers? If random → score = 0
 2. Does the answer address the question at all? If no → score ≤ 2
 3. Does the answer show domain knowledge in ${resumeData.field}? If no → score ≤ 4
@@ -304,21 +308,12 @@ Return ONLY a valid JSON object. No extra text. No markdown.
 
     const evaluation = JSON.parse(jsonMatch[0]);
 
-    // ✅ FIX: Ensure strengths and weaknesses are always arrays
-    if (typeof evaluation.strengths === 'string') {
-      evaluation.strengths = [evaluation.strengths];
-    }
-    if (typeof evaluation.weaknesses === 'string') {
-      evaluation.weaknesses = [evaluation.weaknesses];
-    }
-    if (!Array.isArray(evaluation.strengths)) {
-      evaluation.strengths = [];
-    }
-    if (!Array.isArray(evaluation.weaknesses)) {
-      evaluation.weaknesses = [];
-    }
+    // Ensure arrays
+    if (typeof evaluation.strengths === "string") evaluation.strengths = [evaluation.strengths];
+    if (typeof evaluation.weaknesses === "string") evaluation.weaknesses = [evaluation.weaknesses];
+    if (!Array.isArray(evaluation.strengths)) evaluation.strengths = [];
+    if (!Array.isArray(evaluation.weaknesses)) evaluation.weaknesses = [];
 
-    // Add pass/fail info based on round threshold
     const passed = evaluation.score >= round.passThreshold;
 
     res.json({
@@ -331,17 +326,13 @@ Return ONLY a valid JSON object. No extra text. No markdown.
     });
   } catch (err) {
     console.error("❌ /evaluate-answer error:", err.message);
-    res.status(500).json({ error: "Failed to evaluate answer" });
+    res.status(500).json({ error: "Failed to evaluate answer: " + err.message });
   }
 });
 
 /* ================================================
    ROUTE 4 — Submit Full Round & Get Result
    POST /submit-round
-   Body: JSON  →  resumeData, roundNumber, 
-                  questions[], answers[], scores[]
-   Returns: roundPassed, averageScore, feedback,
-            canProceed, nextRound (if any)
    ================================================ */
 app.post("/submit-round", async (req, res) => {
   try {
@@ -351,12 +342,11 @@ app.post("/submit-round", async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const round = ROUND_CONFIG[roundNumber];
-    const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+    const round      = ROUND_CONFIG[roundNumber];
+    const avgScore   = scores.reduce((a, b) => a + b, 0) / scores.length;
     const roundPassed = avgScore >= round.passThreshold;
     const isLastRound = roundNumber === 3;
 
-    // Build a summary prompt for overall round feedback
     const qaPairs = questions
       .map((q, i) => `Q${i + 1}: ${q}\nA${i + 1}: ${answers[i]}\nScore: ${scores[i]}/10`)
       .join("\n\n");
@@ -403,16 +393,13 @@ Keep it direct and professional. No bullet points. Just a paragraph.
     });
   } catch (err) {
     console.error("❌ /submit-round error:", err.message);
-    res.status(500).json({ error: "Failed to submit round" });
+    res.status(500).json({ error: "Failed to submit round: " + err.message });
   }
 });
 
 /* ================================================
    ROUTE 5 — Final Interview Report
    POST /final-report
-   Body: JSON  →  resumeData, allRoundsData[]
-   Returns: overall result, strengths, weaknesses,
-            recommendation, final verdict
    ================================================ */
 app.post("/final-report", async (req, res) => {
   try {
@@ -423,16 +410,11 @@ app.post("/final-report", async (req, res) => {
     }
 
     const roundsPassed = allRoundsData.filter((r) => r.roundPassed).length;
-    const overallAvg =
-      allRoundsData.reduce((s, r) => s + r.averageScore, 0) /
-      allRoundsData.length;
-    const allPassed = roundsPassed === allRoundsData.length;
+    const overallAvg   = allRoundsData.reduce((s, r) => s + r.averageScore, 0) / allRoundsData.length;
+    const allPassed    = roundsPassed === allRoundsData.length;
 
     const roundSummary = allRoundsData
-      .map(
-        (r) =>
-          `Round ${r.roundNumber} (${r.roundName}): ${r.averageScore}/10 — ${r.roundPassed ? "PASSED" : "FAILED"}`
-      )
+      .map((r) => `Round ${r.roundNumber} (${r.roundName}): ${r.averageScore}/10 — ${r.roundPassed ? "PASSED" : "FAILED"}`)
       .join("\n");
 
     const prompt = `
@@ -477,14 +459,14 @@ Return ONLY a valid JSON object. No extra text. No markdown.
       report: {
         ...report,
         candidateName: resumeData.name,
-        roleAssessed: resumeData.role,
+        roleAssessed:  resumeData.role,
         fieldAssessed: resumeData.field,
         allPassed,
       },
     });
   } catch (err) {
     console.error("❌ /final-report error:", err.message);
-    res.status(500).json({ error: "Failed to generate final report" });
+    res.status(500).json({ error: "Failed to generate final report: " + err.message });
   }
 });
 
@@ -493,15 +475,19 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", message: "Interview API is running 🚀" });
 });
 
+/* -------------------- Catch-all: serve index.html for SPA -------------------- */
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
 /* -------------------- Server -------------------- */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📋 Routes ready:`);
-  console.log(`   POST /analyze-resume     — Upload & analyze resume PDF`);
-  console.log(`   POST /generate-questions — Get questions for a round`);
-  console.log(`   POST /evaluate-answer    — Evaluate a single answer`);
-  console.log(`   POST /submit-round       — Submit round & get result`);
-  console.log(`   POST /final-report       — Get final interview report`);
-  console.log(`   GET  /health             — Health check`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`   POST /analyze-resume`);
+  console.log(`   POST /generate-questions`);
+  console.log(`   POST /evaluate-answer`);
+  console.log(`   POST /submit-round`);
+  console.log(`   POST /final-report`);
+  console.log(`   GET  /health`);
 });
